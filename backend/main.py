@@ -18,7 +18,7 @@ app = FastAPI()
 # Middleware access, will pull from frontend domain and link
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["greenlab-frontend.vercel.app"],
+    allow_origins=["https://greenlab-frontend.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
