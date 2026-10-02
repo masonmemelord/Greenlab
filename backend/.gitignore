@@ -11,7 +11,8 @@ Greenlab-Dataset-3/
 
 yolov8x.pt
 greenlab_users.db
-models/
+models/*
+!models/best.pt
 
 *.db
 
