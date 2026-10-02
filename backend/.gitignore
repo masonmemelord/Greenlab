@@ -1,0 +1,17 @@
+venv/
+.env
+info.env
+
+__pycache__/
+*.pyc
+
+runs/
+cfu_images/
+Greenlab-Dataset-3/
+
+yolov8x.pt
+greenlab_users.db
+models/
+
+*.db
+
