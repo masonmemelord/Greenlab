@@ -1,0 +1,8 @@
+info.env
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+ml/datasets/
+ml/runs/

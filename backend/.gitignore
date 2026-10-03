@@ -1,3 +1,4 @@
+.venv/
 venv/
 .env
 info.env
@@ -5,14 +6,14 @@ info.env
 __pycache__/
 *.pyc
 
-runs/
-cfu_images/
-Greenlab-Dataset-3/
+ml/runs/
+ml/datasets/raw/
+ml/datasets/object_detection/greenlab_v3/
 
-yolov8x.pt
+ml/weights/base/
+ml/weights/legacy/
+ml/weights/detection/*
+!ml/weights/detection/best.pt
 greenlab_users.db
-models/*
-!models/best.pt
 
 *.db
-
