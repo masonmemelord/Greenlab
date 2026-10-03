@@ -1,66 +1,44 @@
 # Computer Vision Logs
-## Oct 3 — Improving CV dataset
+## Oct 3 — Improving CV Dataset
 
-### Objective
-Determine whether a YOLO-based instance segmentation architecture can
-improve cell localization and morphological measurement compared with
-the existing YOLOv8 object-detection pipeline.
+Today’s focus is improving the computer-vision dataset before choosing or training additional models.
 
-### Background / Rationale
-The current YOLOv8 pipeline identifies cells using bounding boxes.
-While this is sufficient for localization, bounding boxes do not
-represent the actual boundaries of irregularly shaped cells.
+### Goal
 
-Earlier development also identified discrepancies between automated
-CV measurements and the manual CellSizer workflow. Segmentation may
-provide a better representation for morphological measurements.
+Build a reliable labeled dataset that can be used to compare cell detection and future segmentation approaches against manually determined ground truth.
 
-### Research Question
-Does instance segmentation provide more reliable cell morphology
-measurements than the existing bounding-box detection pipeline?
+### Dataset priorities
 
-### Hypothesis
-Pixel-level segmentation masks will provide more accurate estimates
-of cell area and equivalent diameter than measurements derived from
-bounding boxes.
+- Review uploaded images for blur, low contrast, inconsistent magnification, or duplicate images.
+- Keep image metadata organized by condition, timepoint, magnification, and source.
+- Use manual cell coordinates as ground truth for cell detection.
+- Use manually traced colony boundaries as ground truth for segmentation.
+- Create a held-out validation set that is never used during training.
+- Ensure each training, validation, and test split contains representative image conditions.
 
-### Method
+### Evaluation plan
 
-**Baseline:** Current YOLOv8 detection pipeline
+Compare models using:
 
-**Experimental Model:** YOLO segmentation architecture
-
-**Dataset:** Existing Roboflow dataset
-
-**Initial Metrics:**
-- IoU
-- Dice coefficient
-- Precision
-- Recall
+- Precision and recall for cell detection
+- IoU and Dice coefficient for segmentation overlap
+- Cell-count error
 - Area measurement error
 - Equivalent diameter error
 
-### Experimental Plan
+### Current architectural decision
 
-**Phase 1:** Train segmentation model and compare against current
-detection pipeline.
+Manual tracing remains a backup and labeling workflow. It is not itself a segmentation model, but its saved outlines and coordinates can become high-quality labels for future CV experiments.
 
-**Phase 2:** Deploy segmentation as an experimental feature for
-side-by-side comparison.
+### Next Goals
+Make and annotation contribution workflow. 
 
-**Phase 3:** Replace the existing detection architecture if
-segmentation demonstrates sufficient reliability.
+#### How it works (or at least how I want it to work) 
+1. User manualy traces cell/colony
+2. Optional "Contribute this annotation" checkbox
+3. Submission API + consent + image/trace metadata
+4. Unreviewed data storage
+5. Quality checks + admin (me) approval
+6. Accepted dataset export
+7. Detection or segmentation training
 
-### Results
-Experiment pending.
-
-### Sources
-- [Add relevant YOLO segmentation paper/documentation]
-- [Add biomedical cell-segmentation paper]
-- [Add morphology/measurement paper]
-
-### Next Steps
-- Establish baseline metrics for current YOLOv8 model
-- Train first segmentation model
-- Define test dataset
-- Compare segmentation measurements against manual measurements
