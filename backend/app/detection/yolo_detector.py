@@ -37,7 +37,7 @@ class CellDetector:
             iou=iou,
             device=self.device,
             imgsz=1280,
-            augment=True,
+            augment=False,
             agnostic_nms=True,
             max_det=1000,
         )

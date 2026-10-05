@@ -3,18 +3,30 @@
 import {
   type PointerEvent as ReactPointerEvent,
   useMemo,
+  useRef,
   useState,
 } from 'react';
+
+import { apiUrl, apiError } from '@/lib/images';
 
 type Point = { x: number; y: number };
 
 type Preview = {
   filename: string;
   url: string;
+  file: File;
+  page: number;
 };
 
 type Measurement = {
   id: number;
+  reviewer: string;
+  elapsed_seconds: number;
+  width: number;
+  height: number;
+  page: number;
+  um_per_px: number;
+  points: Point[];
   file: string;
   area_px: number | null;
   area_um2: number | null;
@@ -46,6 +58,11 @@ function csvValue(value: string | number | null) {
 }
 
 export default function ManualColonyTracer({ previews }: ManualColonyTracerProps) {
+  const [reviewer, setReviewer] = useState('');
+  const [autoLoading, setAutoLoading] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  const [autoPolygons, setAutoPolygons] = useState<Point[][]>([]);
+  const [autoSeconds, setAutoSeconds] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [points, setPoints] = useState<Point[]>([]);
   const [drawing, setDrawing] = useState(false);
@@ -59,6 +76,9 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
 
   function resetTrace() {
     // Changing images always starts a fresh outline; saved measurements remain available for export.
+    timerRef.current = null;
+    setAutoPolygons([]);
+    setAutoSeconds(null);
     setPoints([]);
     setDrawing(false);
     setImageSize({ width: 0, height: 0 });
@@ -96,6 +116,9 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
 
   function saveMeasurement(note: Measurement['note']) {
     if (!selectedPreview) return;
+    if (!reviewer.trim() || timerRef.current === null || !imageSize.width) {
+      setMessage('Enter a reviewer ID, load the image, and start the timer before saving.'); return;
+    }
 
     if (note === 'traced' && points.length < 3) {
       setMessage('Trace the colony outline with at least three points first.');
@@ -107,9 +130,15 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
       return;
     }
 
+    const context = {
+      reviewer: reviewer.trim(), elapsed_seconds: (performance.now() - timerRef.current) / 1000,
+      width: imageSize.width, height: imageSize.height, page: selectedPreview.page + 1,
+      um_per_px: umPerPx, points: note === 'traced' ? [...points] : [],
+    };
     const measurement: Measurement =
       note === 'traced'
         ? {
+            ...context,
             id: selectedIndex,
             file: selectedPreview.filename,
             area_px: areaPx,
@@ -119,6 +148,7 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
             note,
           }
         : {
+            ...context,
             id: selectedIndex,
             file: selectedPreview.filename,
             area_px: null,
@@ -149,11 +179,11 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
       'area_um2',
       'area_mm2',
       'equiv_diam_um',
-      'note',
+      'note', 'reviewer', 'elapsed_seconds', 'page', 'um_per_px',
     ];
 
     const rows = measurements
-      .sort((a, b) => a.id - b.id)
+      .slice().sort((a, b) => a.id - b.id)
       .map((item) =>
         [
           item.file,
@@ -161,7 +191,7 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
           item.area_um2?.toFixed(2) ?? null,
           item.area_mm2?.toFixed(6) ?? null,
           item.equiv_diam_um?.toFixed(2) ?? null,
-          item.note,
+          item.note, item.reviewer, item.elapsed_seconds.toFixed(3), item.page, item.um_per_px,
         ]
           .map(csvValue)
           .join(',')
@@ -178,6 +208,39 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
     URL.revokeObjectURL(url);
   }
 
+  function downloadRois() {
+    const blob = new Blob([JSON.stringify({version: 1, annotations: measurements}, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = 'colony_rois.json'; link.click(); URL.revokeObjectURL(url);
+  }
+
+  async function suggestColony() {
+    setAutoLoading(true);
+    setAutoPolygons([]);
+    setAutoSeconds(null);
+    try {
+      const form = new FormData(); form.append('file', selectedPreview.file);
+      const response = await fetch(apiUrl(`/api/colony-detect?page=${selectedPreview.page}`), {
+        method: 'POST', body: form, signal: AbortSignal.timeout(180000),
+      });
+      if (!response.ok) throw new Error(await apiError(response));
+      const data: {polygons: number[][][]; elapsed_seconds: number} = await response.json();
+      setAutoPolygons(data.polygons.map((polygon) => polygon.map(([x, y]) => ({x, y}))));
+      setAutoSeconds(data.elapsed_seconds);
+      setMessage(data.polygons.length ? 'Computer outlines shown in blue. Keep manual study traces independent.' : 'Computer found no colonies at this threshold.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Colony detection failed.'); }
+    finally { setAutoLoading(false); }
+  }
+
+  function downloadComputerRois() {
+    const blob = new Blob([JSON.stringify({file: selectedPreview.filename, page: selectedPreview.page + 1,
+      width: imageSize.width, height: imageSize.height, um_per_px: umPerPx,
+      elapsed_seconds: autoSeconds, source: 'computer', polygons: autoPolygons}, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob); const link = document.createElement('a');
+    link.href = url; link.download = 'computer_colony_rois.json'; link.click(); URL.revokeObjectURL(url);
+  }
+
   if (!selectedPreview) return null;
 
   return (
@@ -187,6 +250,8 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
         Draw directly over the colony. Measurements stay in this browser until you download the CSV.
       </p>
 
+      <label>Reviewer ID <input className="gl-input" value={reviewer} onChange={(e) => setReviewer(e.target.value)} /></label>
+      <button className="gl-btn gl-btn--primary" onClick={() => { timerRef.current = performance.now(); setMessage('Timer started; includes drawing and corrections until Keep Trace or No Colony.'); }}>Start image timer</button>
       <div className="gl-manual__controls">
         <label>
           Image
@@ -218,7 +283,7 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
 
       {previewError ? (
         <p className="gl-msg gl-msg--error">
-          This browser cannot preview the selected TIFF. Use PNG/JPG for manual tracing, or add TIFF-to-PNG conversion later.
+          Image preview failed. Check the file and backend connection.
         </p>
       ) : (
         <div className="gl-manual__surface">
@@ -255,6 +320,7 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
               }}
               onPointerCancel={() => setDrawing(false)}
             >
+              {autoPolygons.map((polygon, index) => <polygon key={index} points={polygon.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="blue" strokeWidth="2" />)}
               {points.length > 1 && (
                 <polygon
                   points={points.map((point) => `${point.x},${point.y}`).join(' ')}
@@ -287,6 +353,10 @@ export default function ManualColonyTracer({ previews }: ManualColonyTracerProps
         </button>
       </div>
 
+      <button className="gl-btn gl-btn--csv" disabled={!measurements.length} onClick={downloadRois}>Download training ROIs</button>
+      <button className="gl-btn gl-btn--primary" disabled={autoLoading || !imageSize.width} onClick={suggestColony}>{autoLoading ? 'Circling…' : 'Auto circle (trained model)'}</button>
+      <button className="gl-btn gl-btn--csv" disabled={autoSeconds === null} onClick={downloadComputerRois}>Download computer ROIs</button>
+      {autoSeconds !== null && <p>Computer inference: {autoSeconds.toFixed(3)} seconds</p>}
       {message && <p className="gl-result-msg">{message}</p>}
     </section>
   );

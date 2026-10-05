@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import '@/app/globals.css';
+import { apiUrl, apiError, previewUrls } from '@/lib/images';
 
 //Should be self explanatory
 type DetectionResult = {
   filename: string;
   image: string;
   cell_count: number;
+  elapsed_seconds: number;
 };
 
 type PreviewImage = {
@@ -26,6 +28,8 @@ type HistoryItem = {
 export default function Dashboard() {
   const router = useRouter();
 
+  const [error, setError] = useState('');
+  const [page, setPage] = useState(1);
   const [images, setImages] = useState<File[]>([]);
   const [previews, setPreviews] = useState<PreviewImage[]>([]);
   const [results, setResults] = useState<DetectionResult[]>([]);
@@ -40,24 +44,29 @@ export default function Dashboard() {
     };
   }, [previews]);
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files ?? []);
     if (selectedFiles.length === 0) return;
 
-    setImages(selectedFiles);
-    setPreviews(
-      selectedFiles.map((file) => ({
-        filename: file.name,
-        url: URL.createObjectURL(file),
-      }))
-    );
-    setResults([]);
+    setError('');
+    setLoading(true);
+    try {
+      const urls = await previewUrls(selectedFiles, page - 1);
+      setImages(selectedFiles);
+      setPreviews(selectedFiles.map((file, index) => ({ filename: file.name, url: urls[index] })));
+      setResults([]);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Image preview failed.');
+    } finally { setLoading(false); }
+
   };
 
   const handleDetect = async () => {
     if (images.length === 0) return;
 
     setLoading(true);
+    setError('');
+    setResults([]);
 
     try {
       const formData = new FormData();
@@ -67,21 +76,19 @@ export default function Dashboard() {
       });
 
       const res = await fetch( //waits for FastAPI to complete its backend call
-        `${process.env.NEXT_PUBLIC_API_URL}/api/detect?confidence=${confidence}`,
+        apiUrl(`/api/detect?confidence=${confidence}&page=${page - 1}`),
         {
           method: 'POST',
           body: formData,
+          signal: AbortSignal.timeout(180000),
         }
       );
 
-      if (!res.ok) {
-        const err = await res.json();
-        console.error('API error:', err);
-        return;
-      }
+      if (!res.ok) throw new Error(await apiError(res));
 
       const data: { results: DetectionResult[]; total_files: number } = await res.json();
 
+      if (!Array.isArray(data.results) || data.results.length !== images.length) throw new Error('Backend returned incomplete results.');
       setResults(data.results);
 
       setHistory((prev) => [  //fetches history of files (ie. prev and data.results)
@@ -94,7 +101,7 @@ export default function Dashboard() {
         })),
       ]);
     } catch (err) {
-      console.error('Detection failed:', err);
+      setError(err instanceof Error ? err.message : 'Detection failed. Check the backend connection.');
     } finally {
       setLoading(false);
     }
@@ -150,6 +157,9 @@ export default function Dashboard() {
         <div className="gl-card">
           <p className="gl-upload__label">Upload cell images (PNG, JPG, JPEG, TIFF)</p>
 
+          <label>Image page (1 for single-page images) <input className="gl-input" type="number" min="1" value={page} disabled={loading || images.length > 0} onChange={(e) => setPage(Math.max(1, Number(e.target.value) || 1))} /></label>
+          <p>To change pages, reload this page before choosing images.</p>
+          {error && <p role="alert" className="gl-msg gl-msg--error">{error}</p>}
           <input
             ref={fileRef}
             type="file"
@@ -160,6 +170,7 @@ export default function Dashboard() {
           />
 
           <button
+            disabled={loading}
             onClick={() => fileRef.current?.click()}
             className="gl-btn gl-btn--primary"
           >
@@ -195,7 +206,7 @@ export default function Dashboard() {
                     {result && (
                       <div>
                         <p className="gl-upload__img-label">
-                          Detection Result: {result.cell_count} cell(s)
+                          Detection Result: {result.cell_count} cell(s) · {result.elapsed_seconds.toFixed(2)} s
                         </p>
                         <img
                           src={`data:image/jpeg;base64,${result.image}`}

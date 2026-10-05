@@ -8,6 +8,8 @@ import {
   useState,
 } from 'react';
 
+import { previewUrls } from '@/lib/images';
+
 type Point = { x: number; y: number };
 
 type Preview = {
@@ -15,6 +17,7 @@ type Preview = {
   filename: string;
   timepoint: string;
   url: string;
+  page: number;
 };
 
 type ManualCell = {
@@ -23,6 +26,9 @@ type ManualCell = {
   timepoint: string;
   file: string;
   source: 'manual';
+  reviewer: string;
+  elapsedSeconds: number;
+  page: number;
   centroidX: number;
   centroidY: number;
   semiAxisX: number;
@@ -74,6 +80,10 @@ function gridKeyForPoint(
 }
 
 export default function CellSizerPage() {
+  const [page, setPage] = useState(1);
+  const [reviewer, setReviewer] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const timerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const objectUrlsRef = useRef<string[]>([]);
 
@@ -113,6 +123,7 @@ export default function CellSizerPage() {
   const umPerPx = calibrations[activeTimepoint] ?? DEFAULT_UM_PER_PX;
 
   function resetCanvas() {
+    timerRef.current = null;
     setDrag(null);
     setRemoveMode(false);
     setImageSize({ width: 0, height: 0 });
@@ -126,29 +137,24 @@ export default function CellSizerPage() {
     resetCanvas();
   }
 
-  function handleFiles(event: React.ChangeEvent<HTMLInputElement>) {
+  async function handleFiles(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     if (files.length === 0) return;
 
-    const newPreviews = files.map((file) => {
-      const url = URL.createObjectURL(file);
-      objectUrlsRef.current.push(url);
-
-      return {
-        id: crypto.randomUUID(),
-        filename: file.name,
-        timepoint: activeTimepoint,
-        url,
-      };
-    });
-
-    setPreviews((current) => [...current, ...newPreviews]);
-    setSelectedImageId(newPreviews[0].id);
-    resetCanvas();
-    setMessage(`${newPreviews.length} image(s) added to ${activeTimepoint}.`);
-
-    // Allow selecting the same file again after clearing or correcting a review.
-    event.target.value = '';
+    const input = event.target;
+    const timepoint = activeTimepoint;
+    setUploading(true);
+    try {
+      const urls = await previewUrls(files, page - 1);
+      objectUrlsRef.current.push(...urls);
+      const newPreviews = files.map((file, index) => ({ id: crypto.randomUUID(), filename: file.name, timepoint, url: urls[index], page }));
+      setPreviews((current) => [...current, ...newPreviews]);
+      setSelectedImageId(newPreviews[0].id);
+      resetCanvas();
+      setMessage(`${newPreviews.length} image(s) added to ${timepoint}.`);
+      input.value = '';
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Preview failed.'); }
+    finally { setUploading(false); }
   }
 
   function selectImage(imageId: string) {
@@ -198,6 +204,7 @@ export default function CellSizerPage() {
 
   function finishEllipse(nextDrag: Drag) {
     if (!selectedPreview) return;
+    if (!reviewer.trim() || timerRef.current === null) { setMessage('Enter a reviewer ID and start the image timer first.'); return; }
 
     const semiAxisX = Math.abs(nextDrag.current.x - nextDrag.start.x) / 2;
     const semiAxisY = Math.abs(nextDrag.current.y - nextDrag.start.y) / 2;
@@ -233,6 +240,9 @@ export default function CellSizerPage() {
       timepoint: activeTimepoint,
       file: selectedPreview.filename,
       source: 'manual',
+      reviewer: reviewer.trim(),
+      page: selectedPreview.page,
+      elapsedSeconds: (performance.now() - timerRef.current) / 1000,
       centroidX: center.x,
       centroidY: center.y,
       semiAxisX,
@@ -293,14 +303,14 @@ export default function CellSizerPage() {
 
     const headers = [
       'Timepoint', 'file', 'Source', 'Centroid_X', 'Centroid_Y',
-      'Area_px', 'Diam_px', 'Major_px', 'Minor_px', 'Area_um2', 'Diam_um',
+      'Area_px', 'Diam_px', 'Major_px', 'Minor_px', 'Area_um2', 'Diam_um', 'Reviewer', 'Page', 'Elapsed_seconds_at_cell_save',
     ];
     const rows = cells.map((cell) => [
       cell.timepoint, cell.file, cell.source,
       cell.centroidX.toFixed(2), cell.centroidY.toFixed(2),
       cell.areaPx.toFixed(2), cell.diameterPx.toFixed(2),
       cell.majorPx.toFixed(2), cell.minorPx.toFixed(2),
-      cell.areaUm2.toFixed(2), cell.diameterUm.toFixed(2),
+      cell.areaUm2.toFixed(2), cell.diameterUm.toFixed(2), cell.reviewer, cell.page, cell.elapsedSeconds.toFixed(3),
     ].map(csvValue).join(','));
 
     const blob = new Blob([[headers.join(','), ...rows].join('\n')], { type: 'text/csv' });
@@ -333,9 +343,12 @@ export default function CellSizerPage() {
         <section className="gl-card">
           <h2 className="gl-manual__title">Manual cell sampling</h2>
           <p className="gl-manual__hint">
-            This is a browser-only manual workflow. It does not run auto-detection or send images to the database.
+            Manual ellipses stay in this browser until export. TIFFs use backend PNG conversion at original dimensions.
           </p>
 
+          <label>Reviewer ID <input className="gl-input" value={reviewer} onChange={(e) => setReviewer(e.target.value)} /></label>
+          <label>Image page <input className="gl-input" type="number" min="1" value={page} disabled={uploading} onChange={(e) => setPage(Math.max(1, Number(e.target.value) || 1))} /></label>
+          <button className="gl-btn gl-btn--primary" onClick={() => { timerRef.current = performance.now(); setMessage('Image timer started. Save each cell; the final saved cell records cumulative image time.'); }}>Start image timer</button>
           <div className="gl-sizer__controls">
             <label>
               Timepoint
@@ -381,7 +394,7 @@ export default function CellSizerPage() {
             onChange={handleFiles}
             style={{ display: 'none' }}
           />
-          <button className="gl-btn gl-btn--primary" onClick={() => fileInputRef.current?.click()}>
+          <button className="gl-btn gl-btn--primary" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
             Add Images for {activeTimepoint}
           </button>
         </section>
@@ -399,7 +412,7 @@ export default function CellSizerPage() {
             </div>
 
             {previewError ? (
-              <p className="gl-msg gl-msg--error">This browser cannot preview the selected TIFF. Use PNG/JPG for browser-based manual cell sizing.</p>
+              <p className="gl-msg gl-msg--error">Image preview failed. Check the file and backend connection.</p>
             ) : selectedPreview && (
               <div className="gl-sizer__surface">
                 {/* A native image preserves the uploaded file's exact natural dimensions for ellipse measurements. */}

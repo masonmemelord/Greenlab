@@ -1,6 +1,11 @@
 # FASTAPI imports
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from app.imaging import read_plane
+from time import perf_counter
+import logging
+import os
 from pydantic import BaseModel
 from PIL import Image
 import io, base64, numpy as np, cv2, bcrypt
@@ -10,7 +15,15 @@ from tempfile import TemporaryDirectory
 from app.measurement.cell_sizer import IMAGE_EXTENSIONS, measure_image
 from app.detection.yolo_detector import CellDetector
 from typing import List
-from app.db import supabase
+def get_database():
+    # Image tools can start even when authentication storage is not configured.
+    try:
+        from app.db import supabase
+        return supabase
+    except Exception as error:
+        logging.exception("Database initialization failed")
+        raise HTTPException(503, "Authentication database is unavailable. Check backend configuration.") from error
+
 
 
 app = FastAPI()
@@ -18,16 +31,64 @@ app = FastAPI()
 # Middleware access, will pull from frontend domain and link
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://greenlab-frontend.vercel.app"],
+    allow_origins=os.getenv("CORS_ORIGINS", "https://greenlab-frontend.vercel.app,http://localhost:3000,http://127.0.0.1:3000").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Keep the production model path independent of the command's working directory.
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-detector = CellDetector(
-    model_path=BACKEND_ROOT / "ml" / "weights" / "detection" / "best.pt"
-)
+detector = None
+colony_detector = None
+
+
+def get_detector(colony=False):
+    global detector, colony_detector
+    cached = colony_detector if colony else detector
+    if cached is None:
+        weights = BACKEND_ROOT / "ml" / "weights" / ("segmentation" if colony else "detection") / "best.pt"
+        if not weights.is_file():
+            raise HTTPException(503, "Colony segmentation weights are missing. Train with ROI labels first." if colony else "Cell detection weights are missing on the backend.")
+        try:
+            cached = CellDetector(model_path=weights)
+        except Exception as error:
+            logging.exception("Model initialization failed")
+            raise HTTPException(503, "Model could not load. Check backend logs and dependencies.") from error
+        if colony:
+            if cached.model.task != "segment":
+                raise HTTPException(503, "Colony weights must be a segmentation model.")
+            colony_detector = cached
+        else:
+            detector = cached
+    return cached
+
+
+@app.post("/api/image-preview")
+async def image_preview(file: UploadFile = File(...), page: int = Query(0, ge=0)):
+    try:
+        image, pages = read_plane(await file.read(), page)
+    except (OSError, ValueError, EOFError) as error:
+        raise HTTPException(400, f"Could not read {file.filename}: {error}") from error
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return Response(buffer.getvalue(), media_type="image/png", headers={"X-Image-Pages": str(pages)})
+
+
+@app.post("/api/colony-detect")
+async def colony_detect(file: UploadFile = File(...), page: int = Query(0, ge=0), confidence: float = Query(0.5, ge=0.1, le=0.9)):
+    try:
+        image, _ = read_plane(await file.read(), page)
+    except (OSError, ValueError, EOFError) as error:
+        raise HTTPException(400, f"Could not read {file.filename}: {error}") from error
+    model = get_detector(colony=True)
+    start = perf_counter()
+    try:
+        result = model.predict(image, confidence=confidence)
+    except Exception as error:
+        logging.exception("Colony inference failed")
+        raise HTTPException(500, "Colony inference failed. Check backend logs.") from error
+    polygons = [] if result.masks is None else [polygon.tolist() for polygon in result.masks.xy]
+    return {"polygons": polygons, "elapsed_seconds": perf_counter() - start}
 
 # Normalize image
 def normalize_image(image):
@@ -46,6 +107,7 @@ class Credentials(BaseModel):
 
 @app.post("/api/signup")
 def signup(creds: Credentials):
+    supabase = get_database()
     # Check for Tulane email
     if not creds.username.endswith('@tulane.edu'):
         raise HTTPException(status_code=400, detail="Only Tulane email addresses are allowed")
@@ -63,6 +125,7 @@ def signup(creds: Credentials):
 
 @app.post("/api/login")
 def login(creds: Credentials):
+    supabase = get_database()
     # Fetch user from Supabase
     result = supabase.table("users").select("password").eq("username", creds.username).execute()
     if not result.data:
@@ -81,35 +144,32 @@ def login(creds: Credentials):
 @app.post("/api/detect")
 async def detect(
     files: List[UploadFile] = File(...),
-    confidence: float = Query(0.5, ge=0.1, le=0.9)
+    confidence: float = Query(0.5, ge=0.1, le=0.9),
+    page: int = Query(0, ge=0),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
+    model = get_detector()
     results_out = []
 
     for file in files: #Runs loop to allow for "unlimited" file selection
-        if file.content_type and not file.content_type.startswith("image/"):
-            raise HTTPException(
-                status_code=400,
-                detail=f"{file.filename} is not an image file"
-            )
-
         try:
-            contents = await file.read()
-            image = Image.open(io.BytesIO(contents)).convert("RGB")
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Could not read {file.filename} as an image"
-            )
+            image, pages = read_plane(await file.read(), page)
+        except (OSError, ValueError, EOFError) as error:
+            raise HTTPException(400, f"Could not read {file.filename}: {error}") from error
 
+        start = perf_counter()
         normalized = normalize_image(image) #normalizes images -> greyscale
-        results = detector.predict(normalized, confidence=confidence)
+        try:
+            results = model.predict(normalized, confidence=confidence)
+        except Exception as error:
+            logging.exception("Detection failed")
+            raise HTTPException(500, "Detection failed. Check backend logs for the model error.") from error
+        elapsed = perf_counter() - start
 
         annotated = results.plot()
-        annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
-        success, buffer = cv2.imencode('.jpg', annotated_bgr)
+        success, buffer = cv2.imencode('.jpg', annotated)
 
         if not success:
             raise HTTPException(
@@ -120,6 +180,9 @@ async def detect(
         results_out.append({
             "filename": file.filename,
             "cell_count": len(results.boxes),
+            "page": page + 1,
+            "pages": pages,
+            "elapsed_seconds": elapsed,
             "image": base64.b64encode(buffer).decode("utf-8")
         })
 
@@ -133,7 +196,8 @@ async def cell_measure(files: List[UploadFile] = File(...),
                        max_diameter_um: float = Query(100.0, gt=0),
                        split_touching_cells: bool = Query(True),
                        h_min: float = Query(2.0, ge=0),
-                       um_per_px: float | None = Query(None, gt=0),):
+                       um_per_px: float | None = Query(None, gt=0),
+                       page: int = Query(0, ge=0),):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
@@ -155,8 +219,12 @@ async def cell_measure(files: List[UploadFile] = File(...),
                     detail=f"{filename} is not a supported image type.",
                 )
 
-            temp_path = temp_dir_path / f"{index}{suffix}"
-            temp_path.write_bytes(await file.read())
+            temp_path = temp_dir_path / f"{index}.png"
+            try:
+                image, _ = read_plane(await file.read(), page)
+                image.save(temp_path)
+            except (OSError, ValueError, EOFError) as error:
+                raise HTTPException(400, f"Could not read {filename}: {error}") from error
 
             try:
                 cells = measure_image(
