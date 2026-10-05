@@ -17,3 +17,8 @@ ml/weights/detection/*
 greenlab_users.db
 
 *.db
+
+# Supabase CLI generated project metadata
+supabase/.temp/
+
+
