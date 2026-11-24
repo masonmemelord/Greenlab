@@ -42,3 +42,5 @@ Make and annotation contribution workflow.
 6. Accepted dataset export
 7. Detection or segmentation training
 
+## Nov 23 - New Plans for desktop app
+All changes stated above will be moved to the tentative desktop app that will start developmont around mid-December
