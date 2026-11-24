@@ -308,7 +308,7 @@ class CellSizer:
                 "Major_px": major_px,
                 "Minor_px": minor_px,
                 "Area_um2": (
-                    area_px * um_per_px ^ 2
+                    area_px * um_per_px ** 2
                     if um_per_px is not None else np.nan
                     ),
                     "Diam_um": (

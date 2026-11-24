@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import numpy as np
 
 
-def mask(polygons, width, height):
+def mask(polygons, width, height): #segmentation masking from outlines
     canvas = Image.new('1', (width, height))
     draw = ImageDraw.Draw(canvas)
     for polygon in polygons:
@@ -17,7 +17,7 @@ def mask(polygons, width, height):
     return np.asarray(canvas, dtype=bool)
 
 
-def compare(computer, humans):
+def compare(computer, humans): #computes on with IoU, Dice, and error percentage
     cmask = mask(computer['polygons'], computer['width'], computer['height'])
     rows = []
     for export in humans:
